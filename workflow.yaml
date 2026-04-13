@@ -1,0 +1,822 @@
+name: enterprise_data_assistant
+version: "7.2"
+description: |
+  AI data assistant doanh nghiệp (single-table)
+  - get_data, get_file_download, query_vector, summarize_vector_file
+  - complaint, escalation, smalltalk, other
+  - followup/reset, context xuyên suốt
+
+metadata:
+  author: "OpenAI Assistant"
+  created_at: "2025-07-17"
+
+steps:
+###############################################
+# INPUT
+###############################################
+- id: input
+  type: webhook
+  name: "Nhận câu hỏi user"
+  output:
+    user_question: "{{payload.text}}"
+  next: classify_behavior
+
+###############################################
+# CLASSIFY BEHAVIOR
+###############################################
+- id: standardize_question
+  type: llm
+  name: "Phân loại intent & final_question"
+  properties:
+
+    prompt: |
+      Bạn là một trợ lý AI trong hệ thống workflow. Nhiệm vụ của bạn gồm hai bước:
+        
+        ---
+        
+        ### BƯỚC 1. CHUẨN HÓA CÂU HỎI
+        Input: "{{user_question}}"  
+        
+        Hãy:
+        - Giữ nguyên ý nghĩa gốc của câu hỏi.
+        - Không thêm bớt nội dung hay diễn giải ngoài ý gốc.
+        - Sửa lỗi chính tả, dấu câu, viết tắt, hoặc diễn đạt sai để câu hỏi rõ ràng, tự nhiên, dễ hiểu nhất.
+        - Giữ lại đầy đủ các từ khóa nghiệp vụ quan trọng.
+        
+        Kết quả bước này: `final_question`
+        
+        ---
+        
+        ### BƯỚC 2. XÁC ĐỊNH HÀNH VI NGHIỆP VỤ
+        Dựa trên `final_question`, hãy chọn chính xác **một hành vi** sau:
+        
+        - get_data: Truy xuất dữ liệu có cấu trúc từ file Excel đã lưu trong VectorDB bằng cách lọc theo tên file và các trường cụ thể (cột, giá trị, điều kiện, thời gian...). Tín hiệu: câu hỏi nêu rõ tên file Excel (ví dụ: “thời khóa biểu lớp 8.xlsx”, “bảng điểm lớp 6”), kèm yêu cầu lấy, lọc, đếm, tính tổng, xem chi tiết dữ liệu trong bảng. Không chọn get_data nếu câu hỏi mang tính tìm kiếm ngữ nghĩa trong nội dung văn bản hoặc không liên quan tới dữ liệu bảng Excel.
+        
+        - find_document: Tìm kiếm ngữ nghĩa trong nội dung bài giảng, tài liệu học tập hoặc giáo trình dựa trên câu hỏi của học sinh → dùng vector search (RAG) để truy xuất đoạn liên quan nhất. Tín hiệu: câu hỏi không nêu trường dữ liệu cụ thể, mà hỏi theo ý nghĩa hoặc khái niệm, ví dụ: “bài nào nói về phản ứng hóa học”, “tài liệu giải thích quy luật cung cầu”, “phần nào hướng dẫn cách tính đạo hàm”. Mục tiêu: trả về đoạn hoặc tài liệu học tập liên quan nhất theo nội dung ngữ nghĩa.
+        
+        - generate_document: Tiến hành vector search (RAG) trong tài liệu, bài giảng Ngữ văn để thu thập các đoạn liên quan, sau đó tổng hợp và tạo mới văn bản theo yêu cầu người dùng (như viết đoạn, bài cảm nhận, phân tích, tóm tắt, hoặc nghị luận). Tín hiệu: câu hỏi yêu cầu tạo nội dung mới dựa trên kiến thức hoặc trích đoạn đã học, ví dụ: “viết đoạn văn cảm nhận về nhân vật A”, “tóm tắt nội dung bài thơ B”, “phân tích chủ đề tình yêu quê hương trong truyện ngắn C, viết một bài văn hoặc đoạn văn khoảng 500 chữ về chủ đề nào đó”. Mục tiêu: sinh văn bản hoàn chỉnh dựa trên các kết quả được tìm thấy qua RAG.
+        
+        - small_talk: Nếu câu hỏi của người dùng là những câu hỏi xã giao, chào hỏi hay không liên quan gì tới các môn học Ví dụ: xin chào, cảm ơn, bạn làm được gì cho toi,... Các câu hỏi như, phân tích hay yêu cầu phát biểu cảm nghĩ không được chọn luồng small_talk này
+        
+        - inappropriate_content: Dành cho những câu hỏi hoặc yêu cầu không phù hợp với môi trường học đường, vi phạm tiêu chuẩn cộng đồng, hoặc mang tính nhạy cảm, tục tĩu, bạo lực, kích động, phân biệt đối xử, chính trị, tôn giáo, tình dục, hay bất kỳ nội dung nào không nên xuất hiện trong hệ thống học tập. Tín hiệu: câu hỏi hoặc nội dung của người dùng không liên quan đến học tập, chứa yếu tố phản cảm, tiêu cực hoặc vi phạm quy chuẩn đạo đức.
+
+        - student_concern: Dành cho các thắc mắc, vấn đề, hoặc mối quan tâm của học sinh liên quan đến đời sống học đường, kỷ luật, hoặc giá trị đạo đức, như “làm sao để ngăn chặn quay cóp”, “làm sao xử lý bạo lực học đường”, “nếu bạn bè bắt nạt thì nên làm gì”, “làm sao để học sinh đoàn kết hơn”. Tín hiệu: câu hỏi mang tính định hướng, xin lời khuyên, hoặc bày tỏ lo lắng về các hành vi trong môi trường học đường, không yêu cầu dữ liệu học tập hay sinh văn bản.
+         
+        - solve_math_problem: Dành cho các câu hỏi yêu cầu giải bài tập Toán, Vật lý, Hóa học, hoặc các phép tính, công thức khoa học. Hệ thống sẽ phân tích đề bài, xác định công thức, thay số, tính toán từng bước, và trả lời bằng ngôn ngữ tự nhiên, dễ hiểu, đảm bảo kết quả chính xác tuyệt đối và hiển thị đẹp mắt, dễ đọc trên Zalo (không dùng ký hiệu đặc biệt hay LaTeX). Tín hiệu nhận diện: Câu hỏi chứa các từ khóa hoặc biểu thức tính toán (ví dụ: “tính”, “giải”, “tìm”, “xác định”, “bao nhiêu”, “công thức”, “vận tốc”, “thể tích”, “diện tích”, “rơi tự do”, “phản ứng hóa học”, “mol”, “nồng độ”, “a²”, “√”, “%”, “+”, “−”, “×”, “÷”, “m/s”, “dm³”, …).
+
+
+        ### 🧾 KẾT QUẢ CUỐI CÙNG
+        Trả về JSON chuẩn theo mẫu:
+        ```json
+        {
+          "final_question": "final question",
+          "behavior": "get_data",
+        }
+
+
+  output:
+    behavior_json: "{{llm_output}}"
+  next: route_behavior
+
+
+
+- id: route_behavior
+  type: switch
+  input: "{{behavior}}"
+  cases:
+    get_data: query_excel_name
+    find_document: document_search
+    generate_document: document_search_to_create
+    small_talk: handle_small_talk
+    inappropriate_content: handle_inappropriate_content
+    student_concern: handle_student_concern
+    solve_math_problem: handle_mathematics_problem
+
+#####################################################################################
+# Find Document
+#####################################################################################
+
+
+- id: document_search
+  type: vector_search
+  name: "Tìm kiếm Qdrant local"
+  properties:
+    search_value: "final_question"
+    chunk_require: 40
+    result_name: document_vector_result
+  output:
+    document_result: "{{document_vector_result}}"
+  next: generate_natural_language
+
+
+- id: generate_natural_language
+  type: llm
+  name: "Tạo câu trả lời theo ngôn ngữ tự nhiên"
+  properties:
+    model: gpt-4o
+    prompt: |
+      Câu hỏi: "{{final_question}}"
+      
+      Dưới đây là đoạn string lịch sử hội thoại giữa người dùng user_request và llm llm_response, nếu câu hỏi hiện tại của người dùng có liên quan tới lịch sử hội thoại thì hãy tham khảo và tạo câu trả lời phù, nếu không liên quan thì tuyệt đối không tham khảo và hãy bỏ quả lịch sử trò chuyện.
+      
+      Lịch sử trò chuyện:  "{{history_chat}}"
+      
+      Bạn là một **trợ lý học tập AI** dành cho học sinh.  
+      Nhiệm vụ của bạn là:
+      - Dựa vào **câu hỏi của học sinh** và **các kết quả truy xuất ngữ nghĩa** ở dưới,  
+      - Viết lại **câu trả lời tự nhiên, dễ hiểu**, phù hợp với ngữ cảnh học tập,  
+      - Giải thích **ngắn gọn, chính xác**, có thể trích dẫn hoặc tóm tắt nội dung từ các tài liệu được tìm thấy.
+      
+      Kết quả truy xuất từ RAG (vector search):  
+      {{document_vector_result}}
+      
+      Yêu cầu khi tạo câu trả lời:
+      - Ngôn ngữ thân thiện, rõ ràng, phù hợp với học sinh.  
+      - Trình bày nội dung có logic, có thể dùng ví dụ hoặc trích đoạn minh họa nếu có trong kết quả.  
+      - Không tạo thêm thông tin ngoài tài liệu được truy xuất.  
+      - Nếu kết quả không đủ thông tin, hãy trả lời trung thực rằng “không tìm thấy nội dung phù hợp” hoặc “tài liệu chưa đề cập rõ phần này”.
+      - Không được trả về các ký tự đặc biệt, nếu kết quả cần trả về là một list hay gì đó hãy trinh bày theo ngôn ngữ tự nhiên, hạn chế tối đa ký tự đặc biệt.
+      Trả về **câu trả lời tự nhiên** bằng tiếng Việt.
+
+
+  output:
+    final_answer: "{{llm_output}}"
+  next: end
+
+
+
+
+#####################################################################################
+# Generate Document
+#####################################################################################
+
+
+- id: document_search_to_create
+  type: vector_search
+  name: "Tìm kiếm Qdrant local"
+  properties:
+    search_value: "final_question"
+    chunk_require: 40
+    result_name: document_vector_result
+
+  output:
+    document_result: "{{document_vector_result}}"
+  next: generate_natural_language_to_create
+
+
+- id: generate_natural_language_to_create
+  type: llm
+  name: "Tạo câu trả lời theo ngôn ngữ tự nhiên"
+  properties:
+    model: gpt-4o
+    prompt: |
+      Câu hỏi: "{{final_question}}"
+      
+      Bạn là một **trợ lý học tập AI** chuyên hỗ trợ môn **Ngữ văn**.  
+      Nhiệm vụ của bạn là:
+        - Dựa theo **câu hỏi hoặc yêu cầu viết văn** của học sinh,  
+        - Kết hợp với **các kết quả truy xuất ngữ nghĩa (RAG)** ở dưới,  
+        - **Tổng hợp và sáng tạo** một đoạn hoặc bài văn hoàn chỉnh theo yêu cầu của học sinh (có thể là cảm nhận, phân tích, tóm tắt, nghị luận, hoặc viết đoạn văn theo chủ đề).
+      
+      Dưới đây là đoạn string lịch sử hội thoại giữa người dùng user_request và llm llm_response, nếu câu hỏi hiện tại của người dùng có liên quan tới lịch sử hội thoại thì hãy tham khảo và tạo câu trả lời phù, nếu không liên quan thì tuyệt đối không tham khảo và hãy bỏ quả lịch sử trò chuyện.
+      
+       Lịch sử trò chuyện:  "{{history_chat}}"
+      
+      
+      Kết quả truy xuất từ RAG:  
+      {{document_vector_result}}
+      
+      Yêu cầu khi tạo văn bản:
+        - Ngôn ngữ tự nhiên, trong sáng, mang phong cách học sinh phổ thông.  
+        - Dựa trên **kiến thức, nội dung và trích đoạn** có trong kết quả RAG, không thêm thông tin không có cơ sở.  
+        - Bố cục rõ ràng, mạch lạc (mở bài – thân bài – kết bài nếu là bài văn; hoặc lập luận chặt chẽ nếu là đoạn văn nghị luận).  
+        - Có thể lồng ghép dẫn chứng hoặc ý từ tài liệu được tìm thấy để làm rõ nội dung.  
+        - Nếu tài liệu không đủ thông tin, hãy viết một đoạn ngắn thể hiện ý chính dựa trên kiến thức Ngữ văn phổ thông.
+        - Không được trả về các ký tự đặc biệt, nếu kết quả cần trả về là một list hay gì đó hãy trinh bày theo ngôn ngữ tự nhiên, hạn chế tối đa ký tự đặc biệt.
+
+      Trả về **văn bản hoàn chỉnh** bằng tiếng Việt.
+
+  output:
+    final_answer: "{{llm_output}}"
+  next: end
+
+
+#####################################################################################
+# Excel RAG
+#####################################################################################
+
+
+
+
+- id: query_excel_name
+  type: supabase
+  name: "Query tên các file excel"
+  output:
+    excel_file_list: "{{query_supabase_output}}"
+  next: identify_excel_file_name
+
+
+
+
+
+- id: identify_excel_file_name
+  type: llm
+  name: "Tạo câu trả lời theo ngôn ngữ tự nhiên"
+  properties:
+    model: gpt-4o
+    prompt: |
+        Câu hỏi hoặc yêu cầu của người dùng: "{{final_question}}"
+
+        Bạn là một **trợ lý AI quản lý dữ liệu trường học**.  
+        Nhiệm vụ của bạn là **xác định chính xác tên file Excel (.xlsx)** mà người dùng đang đề cập đến trong các file excel được gửi.
+        
+        Danh sách các file excel: "{{excel_file_list}}"
+        
+        Yêu cầu:
+        - Phân tích nội dung câu hỏi hoặc yêu cầu để chọn **tên file phù hợp nhất**.
+        - Chỉ trả về **chuỗi tên file duy nhất**, không thêm lời giải thích hoặc ký tự thừa.
+        - Nếu trong trường hợp câu hỏi người dùng có nhập đủ tên file thì xác định bằng tên file ví dụ: 
+            câu hỏi: cho toi thời khóa biểu lớp 6a2 trong file thời khóa biêu so 1 lop tu 8/9/2925.xlsx 
+            thì tên file là: thời khóa biêu so 1 lop tu 8/9/2925.xlsx
+          còn các trường hợp không có tên file thì vẫn xác định dựa theo câu hỏi của người dùng
+      
+      
+        Ví dụ kết quả trả về:
+            bang_diem.xlsx
+        
+        Trả về kết quả duy nhất theo định dạng:
+
+
+  output:
+    excel_file_name: "{{llm_output}}"
+  next: get_data
+
+
+- id: get_data
+  type: excel_search
+  name: "Tìm kiếm Supabase"
+  properties:
+    search_value: "excel_file_name"
+    chunk_require: 40
+    result_name: document_vector_result
+  output:
+    document_result: "{{document_vector_result}}"
+  next: generate_natural_language_excel
+
+
+- id: generate_natural_language_excel
+  type: llm
+  name: "Tạo câu trả lời theo ngôn ngữ tự nhiên"
+  properties:
+    model: gpt-4o
+    prompt: |
+        Câu hỏi của người dùng: "{{final_question}}"
+        
+        Bạn là một **Trợ lý AI quản lý dữ liệu trường học**.
+        
+        Dưới đây là đoạn string lịch sử hội thoại giữa người dùng user_request và llm llm_response, nếu câu hỏi hiện tại của người dùng có liên quan tới lịch sử hội thoại thì hãy tham khảo và tạo câu trả lời phù, nếu không liên quan thì tuyệt đối không tham khảo và hãy bỏ quả lịch sử trò chuyện.
+      
+        Lịch sử trò chuyện:  "{{history_chat}}"
+        
+        Nhiệm vụ của bạn là:
+          - Phân tích dữ liệu được trích xuất từ file Excel (.xlsx) của trường học (được mô tả dưới dạng JSON ở bên dưới).
+          - Trả lời câu hỏi của người dùng một cách chính xác, rõ ràng và dễ hiểu, dựa trên dữ liệu có trong file.
+          - Bảng dữ liệu có thể rất là nhiều cột và dòng, cực kỳ phức tạp, bạn giúp tôi đọc kỹ thông tin, tránh bị thiếu xót 
+          - Dữ liệu có thể là:
+              - Bảng điểm học sinh (gồm họ tên, môn học, điểm số,...)
+              - Thời khóa biểu (lớp, tiết, môn, giáo viên,...)
+              - Danh sách học sinh, giáo viên, hoặc kết quả thi
+              - Hoặc các loại bảng thống kê khác của nhà trường.
+        
+        Dữ liệu Excel (đã được trích xuất sang JSON):
+        {{document_vector_result}}
+        
+        Yêu cầu khi sinh câu trả lời:
+          - Trả lời bằng **tiếng Việt tự nhiên, thân thiện, dễ hiểu** (phù hợp với học sinh, giáo viên hoặc phụ huynh).
+          - **Dựa hoàn toàn vào dữ liệu JSON được cung cấp**, không suy đoán hay thêm thông tin không có trong đó.
+          - Nếu câu hỏi yêu cầu **phân tích, so sánh, tính trung bình, thống kê, hoặc tìm kiếm**, hãy thực hiện phép tính và mô tả kết quả bằng lời.
+          - Nếu dữ liệu không đủ để trả lời, hãy nêu rõ điều đó một cách lịch sự, ví dụ:  
+            “Em chưa thấy đủ dữ liệu để xác định chính xác, nhưng có thể tham khảo thông tin sau…”
+          - Không được trả về các ký tự đặc biệt, nếu kết quả cần trả về là một list hay gì đó hãy trinh bày theo ngôn ngữ tự nhiên, hạn chế tối đa ký tự đặc biệt.
+
+        Trả về **câu trả lời cuối cùng** ở dạng văn bản hoàn chỉnh bằng **tiếng Việt**.
+
+
+  output:
+    final_answer: "{{llm_output}}"
+  next: end
+
+
+
+#####################################################################################
+# Small talk
+#####################################################################################
+
+
+- id: handle_small_talk
+  type: llm
+  name: "Tạo câu trả lời theo ngôn ngữ tự nhiên"
+  properties:
+    model: gpt-4o
+    prompt: |
+     Bạn là một **trợ lý AI học đường** thông minh và thân thiện, có nhiệm vụ hỗ trợ **học sinh và phụ huynh** trong việc tra cứu và hiểu thông tin từ các tài liệu của nhà trường (như PDF, DOCX, XLSX, v.v.).
+
+      Dưới đây là đoạn string lịch sử hội thoại giữa người dùng user_request và llm llm_response, nếu câu hỏi hiện tại của người dùng có liên quan tới lịch sử hội thoại thì hãy tham khảo và tạo câu trả lời phù, nếu không liên quan thì tuyệt đối không tham khảo và hãy bỏ quả lịch sử trò chuyện.
+      
+      "{{history_chat}}"
+      ---
+        
+      **Câu hỏi hiện tại của người dùng:**
+      "{{final_question}}"
+      
+      **Kết quả tìm kiếm từ tài liệu (RAG):**
+      {{document_vector_result}}
+      
+      ---
+      
+      ### 🎯 Nhiệm vụ của bạn:
+      1. Dựa vào **câu hỏi hiện tại**  hãy sinh ra câu trả lời bằng **ngôn ngữ tự nhiên, dễ hiểu, thân thiện** với học sinh và phụ huynh.  
+      2. Câu trả lời nên **ngắn gọn, rõ ràng và đúng trọng tâm**, ưu tiên giải thích để người đọc dễ hiểu.
+      
+      ---
+      
+
+  output:
+    final_answer: "{{llm_output}}"
+  next: end
+
+
+
+#####################################################################################
+# Inappropriate Content
+#####################################################################################
+
+
+- id: handle_inappropriate_content
+  type: llm
+  name: "Tạo câu trả lời theo ngôn ngữ tự nhiên"
+  properties:
+    model: gpt-4o
+    prompt: |
+     Bạn là một **trợ lý AI học đường** thông minh và thân thiện, được thiết kế để hỗ trợ học sinh và phụ huynh trong môi trường học tập lành mạnh và tích cực.
+
+      Dưới đây là đoạn string lịch sử hội thoại giữa người dùng user_request và llm llm_response, nếu câu hỏi hiện tại của người dùng có liên quan tới lịch sử hội thoại thì hãy tham khảo và tạo câu trả lời phù hợp, nếu không liên quan thì tuyệt đối không tham khảo và hãy bỏ qua lịch sử trò chuyện.
+      
+      "{{history_chat}}"
+      ---
+        
+      **Câu hỏi hiện tại của người dùng:**
+      "{{final_question}}"
+      
+      ---
+      
+      ### Nhiệm vụ của bạn:
+      1. Nếu câu hỏi hoặc nội dung của người dùng chứa yếu tố **không phù hợp với môi trường học đường** (ví dụ: ngôn ngữ tục tĩu, bạo lực, xúc phạm, kích động, phân biệt, chính trị, tôn giáo hoặc nội dung người lớn), hãy **từ chối lịch sự** và **hướng người dùng quay lại chủ đề học tập hoặc giao tiếp tích cực**.  
+      2. Giữ **giọng điệu nhẹ nhàng, tôn trọng và giáo dục**, tuyệt đối không bình luận hay xử lý chi tiết nội dung vi phạm.  
+      3. Trả lời **ngắn gọn, lịch sự**, ví dụ:  
+         - “Xin lỗi, mình không thể trao đổi về nội dung này. Bạn có muốn hỏi về bài học hay thông tin nhà trường không?”  
+         - “Nội dung này không phù hợp với môi trường học tập. Chúng ta cùng quay lại chủ đề học nhé!”  
+         - "Noi  dung khong tim thay duoc o trong kho du lieu, vui long thu lai chang han"
+
+      
+
+  output:
+    final_answer: "{{llm_output}}"
+  next: end
+
+
+
+
+#####################################################################################
+# Student Concern
+#####################################################################################
+
+
+- id: handle_student_concern
+  type: llm
+  name: "Tạo câu trả lời theo ngôn ngữ tự nhiên"
+  properties:
+    model: gpt-4o
+    prompt: |
+     Bạn là một **trợ lý AI học đường** thông minh, thân thiện và có trách nhiệm, có nhiệm vụ hỗ trợ **học sinh và phụ huynh** trong việc giải đáp **những thắc mắc, vấn đề đạo đức hoặc hành vi trong môi trường học đường**.
+
+      Dưới đây là đoạn string lịch sử hội thoại giữa người dùng user_request và llm llm_response, nếu câu hỏi hiện tại của người dùng có liên quan tới lịch sử hội thoại thì hãy tham khảo và tạo câu trả lời phù hợp, nếu không liên quan thì tuyệt đối không tham khảo và hãy bỏ qua lịch sử trò chuyện.
+      
+      "{{history_chat}}"
+      ---
+      
+      **Câu hỏi hiện tại của người dùng:**
+      "{{final_question}}"
+      
+      ---
+      
+      ### Nhiệm vụ của bạn:
+      1. Dựa vào **câu hỏi hiện tại**, hãy đưa ra **lời khuyên hoặc định hướng** giúp học sinh hiểu và xử lý vấn đề một cách tích cực, đúng mực.  
+      2. Luôn **giữ giọng điệu cảm thông, mang tính giáo dục và xây dựng**, khuyến khích hành vi tốt, tránh phán xét.  
+      3. Một số ví dụ:  
+         - “Nếu bạn thấy hiện tượng quay cóp, bạn có thể góp ý nhẹ nhàng hoặc báo cho giáo viên chủ nhiệm để được hỗ trợ.”  
+         - “Khi gặp bạo lực học đường, điều quan trọng nhất là tìm sự giúp đỡ từ người lớn đáng tin cậy.”  
+         - “Bạn có thể chia sẻ với thầy cô hoặc bạn bè về khó khăn của mình để cùng tìm cách giải quyết.”  
+      4. Câu trả lời cần **ngắn gọn, dễ hiểu, gần gũi**, hướng người đọc đến **giải pháp tích cực và nhân văn**.
+
+      
+
+  output:
+    final_answer: "{{llm_output}}"
+  next: end
+
+
+
+#####################################################################################
+# Mathematics Problem
+#####################################################################################
+
+
+- id: handle_mathematics_problem
+  type: llm
+  name: "Tạo câu trả lời theo ngôn ngữ tự nhiên"
+  properties:
+    model: gpt-4o
+    prompt: |
+     Bạn là một Trợ lý AI học tập thông minh, chuyên giúp học sinh, giáo viên và phụ huynh giải thích, hướng dẫn và tính toán các bài tập Toán, Vật lý, Hóa học, Sinh học, Tin học và các môn khoa học khác.
+      
+      Dưới đây là đoạn string lịch sử hội thoại giữa người dùng user_request và llm llm_response, nếu câu hỏi hiện tại của người dùng có liên quan tới lịch sử hội thoại thì hãy tham khảo và tạo câu trả lời phù hợp, nếu không liên quan thì tuyệt đối không tham khảo và hãy bỏ qua lịch sử trò chuyện.
+      
+      "{{history_chat}}"
+      
+      Hãy đọc kỹ yêu cầu của người dùng {{final_question}}, và tạo một câu trả lời chính xác, rõ ràng, dễ hiểu, trình bày thân thiện.
+      
+      Yêu cầu về phong cách và cấu trúc trả lời:
+      
+       - Chính xác tuyệt đối      
+       - Dựa trên công thức, định luật, phản ứng, hoặc quy tắc đã được xác nhận.
+       - Mọi phép tính phải được kiểm tra lại để đảm bảo không sai số.      
+       - Trình bày rõ ràng, dễ đọc trên Zalo (không dùng ký tự đặc biệt hay ký hiệu LaTeX):      
+       - Viết công thức bằng chữ cái thường, ví dụ:  Công thức: S = 1/2 * g * t^2      
+       - Ngắt dòng hợp lý, có thể sử dụng gạch đầu dòng hoặc đánh số bước.      
+       - Các bước tính toán nên trình bày theo dạng từng dòng, có chú thích.      
+       - Giải thích ngắn gọn, có lý do và kết luận cuối cùng rõ ràng.      
+       - Nếu câu hỏi thuộc về phân tích, so sánh, hoặc lý thuyết, hãy:      
+          + Giải thích từng khái niệm dễ hiểu.      
+          + Dẫn ra ví dụ minh họa nếu cần.      
+          + Nếu không đủ dữ liệu để tính toán, hãy nói rõ ràng, ví dụ:      
+           "Bài này thiếu thông tin về khối lượng riêng nên chưa thể tính chính xác, nhưng ta có thể nêu cách làm như sau..."
+      
+      Cấu trúc gợi ý cho câu trả lời Toán – Lý – Hóa:
+      1. Phân tích đề bài: (viết ngắn gọn)
+      2. Công thức sử dụng: (ghi công thức dạng văn bản dễ đọc)
+      3. Thay số vào công thức:
+         Ví dụ: S = 1/2 * 9.8 * (3^2) = 44.1 (m)
+      4. Kết luận:
+         → Vậy quãng đường vật rơi được là 44,1 mét.
+      
+      Ví dụ mẫu (phiên bản dễ đọc cho Zalo)
+      
+      Ví dụ 1 – Toán học:
+      Câu hỏi: Tính độ dài cạnh hình vuông có diện tích 53052 m².
+      
+      Trả lời:
+      
+      Công thức tính diện tích hình vuông: A = a²
+      
+      Thay số: a² = 53052
+      
+      Lấy căn bậc hai hai vế: a = √53052 ≈ 230.3
+      
+      Kết luận:
+      → Độ dài cạnh hình vuông là khoảng 230,3 mét.
+      
+      Ví dụ 2 – Vật lý:
+      Câu hỏi: Một vật rơi tự do trong 3 giây. Hỏi vật rơi được quãng đường bao nhiêu (lấy g = 9,8 m/s²)?
+      
+      Trả lời:
+      
+      Công thức: S = 1/2 * g * t²
+      
+      Thay số: S = 1/2 * 9,8 * (3²)
+      
+      Tính: S = 4,9 * 9 = 44,1
+      
+      Kết luận:
+      → Vật rơi được quãng đường 44,1 mét sau 3 giây.
+      
+      Ví dụ 3 – Hóa học:
+      Câu hỏi: Viết phương trình hóa học giữa natri và nước.
+      
+      Trả lời:
+      Phản ứng giữa natri (Na) và nước (H₂O) xảy ra mãnh liệt, tạo ra natri hiđroxit và khí hiđro.
+      
+      Phương trình hóa học:
+      Na + H₂O → NaOH + H₂↑
+      
+      Cân bằng:
+      2Na + 2H₂O → 2NaOH + H₂↑
+      
+      → Sản phẩm là dung dịch NaOH và khí hiđro.
+
+      
+
+  output:
+    final_answer: "{{llm_output}}"
+  next: end
+
+
+
+
+
+
+
+
+
+
+
+
+
+#####################################################################################
+# Get Data: Generate SQL -> Fetch SQL API -> Natural Language -> Return final result
+#####################################################################################
+
+- id: generate_sql_query
+  type: llm
+  name: "Xác định fields"
+  properties:
+
+    prompt: |
+     Bạn là trợ lý AI nội bộ, có nhiệm vụ sinh ra câu lệnh SQL (SQL Server) từ câu hỏi tự nhiên của người dùng.
+
+      ### Yêu cầu:
+      - Phân tích kỹ câu hỏi của người dùng.
+      - Dựa vào danh sách các cột (fields) được cung cấp bên dưới (dưới dạng JSON).
+      - Hiểu nghĩa cột qua `description`, nhưng viết SQL bằng `name`. Chỉ lọc/truy vấn trên cột của bảng alias `d` dựa vào danh sách cột được cấp (không bịa cột).
+      - Phải xét đến kiểu dữ liệu `type` của mỗi cột để đảm bảo câu SQL đúng về cú pháp và logic, tuân thủ `type` khi sinh điều kiện:
+           + datetime/date:
+            + Nếu lọc theo 1 NGÀY (không giờ): dùng khoảng sargable [d].[col] >= 'YYYY-MM-DDT00:00:00' AND [d].[col] < DATEADD(day,1,'YYYY-MM-DDT00:00:00')
+            + Nếu khoảng ngày: [d].[col] >= start AND [d].[col] < DATEADD(day,1,end)
+            + Nếu có giờ-phút-giây: so khớp chính xác theo mốc thời gian.
+            + number/int/decimal: so sánh không dùng nháy.
+            + string/nvarchar: dùng N'...'; dùng LIKE khi câu hỏi mơ hồ (chứa, bắt đầu bằng, kết thúc bằng).
+      - Bọc tên bảng/cột trong [ ]. Khi tham chiếu cột dữ liệu, luôn dùng tiền tố [d].[<name>].
+      - Hỗ trợ thời gian tương đối (“hôm nay”, “hôm qua”, “tuần này”, “tháng này”, “năm nay”, “7 ngày qua”…) suy ra từ {{today_date}} theo quy tắc ở (2).
+      - Nếu không tìm thấy cột nào phù hợp để truy vấn → trả về đúng chữ **No** (không thêm bất kỳ ký tự nào khác).
+      - Nếu có thể truy vấn → trả về **duy nhất câu lệnh SQL Server hoàn chỉnh**, KHÔNG giải thích, KHÔNG trả về markdown hoặc bất kỳ đoạn văn bản nào không thuộc câu lệnh SQL.
+      - Không bao giờ thêm dấu ``` hoặc ký tự không hợp lệ đối với SQL Server.
+      
+      ### Biến đầu vào:
+      - Câu hỏi người dùng: {{final_question}}
+      - Ngày hiện tại: {{today_date}} (định dạng yyyy-MM-dd)
+      - Tên bảng: {{current_table_name}}
+      - Danh sách cột: {{current_table_fields}} (định dạng JSON, mỗi cột có name và description)
+      
+      ### Mục tiêu:
+      Sinh ra 1 câu lệnh SQL Server tương ứng chính xác với ý định của câu hỏi và phù hợp với schema bảng.
+      Và chỉ trả về đúng câu lệnh sql thôi
+    handle_error: notify_sql
+  output:
+    selected_fields: "{{llm_output}}"
+  next: fetch_sql_data
+
+
+- id: fetch_sql_data
+  type: sql_result
+  name: get_sql_data
+  properties:
+    endpoint: "https://workflow.becawork.vn/api/apikey/AI/QuerySQL"
+    method: POST
+    headers:
+      Content-Type: application/json
+    payload:
+      username: "readonly_user"
+      password: "-ufR0NWc5B;c91CyKnD^"
+      sql: "{{selected_fields}}"
+    handle_error: notify_error
+  output:
+    sql_result: "{{api_response}}"
+  next: present_sql_result
+
+
+
+#############################################################################################################
+# Query vector: Identify metadata -> Identity key word -> Vector search -> Natural language -> Return result
+#############################################################################################################
+
+- id: metadata_identify
+  type: llm
+  name: "Xác định metadata trong user request"
+  properties:
+
+    prompt: |
+      Bạn là một trợ lý AI nội bộ doanh nghiệp.
+
+      Nhiệm vụ của bạn là sinh ra **filter Qdrant** từ câu hỏi tự nhiên của người dùng, dựa trên metadata các trường (column) được cung cấp.
+      
+      ---
+      ### Câu hỏi người dùng: "{{user_question}}"
+      
+      ### Hướng dẫn xử lý:
+      
+      1. Phân tích kỹ user_question để xác định các điều kiện lọc, cụ thể:
+         - Giá trị chính xác (match)
+         - Khoảng thời gian (range: gt, lt, gte, lte)
+         - Các giá trị liệt kê (in)
+         - Tùy theo kiểu dữ liệu
+      
+      2. Chỉ sử dụng các trường có trong metadata. Nếu không có trường nào phù hợp với câu hỏi, trả về đúng "No".
+      
+      3. Nếu có trường phù hợp, chỉ trả về **filter Qdrant dạng JSON hợp lệ duy nhất**, **không thêm chú thích, không giải thích thêm.**
+      
+      ---
+      Đây là ngày hôm nay: {{today_date}}
+      ### 
+      Metadata các trường: {{current_table_fields}}
+      
+      
+      ### ĐỊNH DẠNG KẾT QUẢ TRẢ VỀ
+      Ví dụ: "user_question": "liệt cho tôi danh sách người đề nghị là dũng trong tháng 6"
+    
+      json
+      {
+        "should": [
+          { "key": "NguoiDeNghi", "match": { "value": "dũng" } },
+          { "key": "NgayXuat", "range": { "gte": "2024-06-01", "lt": "2024-07-01" } }
+        ]
+      }
+  output:
+    metadata_identity_result: "{{llm_output}}"
+  next: find_key_word
+
+
+- id: find_key_word
+  type: llm
+  name: "Xác định từ khóa trong câu hỏi người dùng"
+  properties:
+
+    prompt: |
+      Bạn là một AI hỗ trợ truy vấn tìm kiếm ngữ nghĩa (semantic search).
+      Nhiệm vụ của bạn là rút trích ra các từ khóa chính (keywords) mang ý nghĩa trọng tâm từ bất kỳ câu hỏi hoặc yêu cầu nào của người dùng.
+      
+    
+      Yêu cầu:
+      
+      Tập trung vào các danh từ chính, cụm danh từ, từ khóa chứa ý nghĩa nghiệp vụ hoặc pháp lý quan trọng.
+      Loại bỏ các từ mang tính xã giao, câu hỏi phụ trợ hoặc không cần thiết cho mục đích tìm kiếm.
+      Kết quả trả về ở định dạng JSON, mảng các chuỗi, không giải thích thêm.
+      Và nối chuỗi các keyword lại giúp tôi
+      Ví dụ 1:
+      Câu hỏi: "Tôi muốn biết điều kiện thanh lý trong hợp đồng mua bán giữa công ty A và công ty B là gì?"
+      Key word là : ["điều kiện thanh lý", "hợp đồng mua bán", "công ty A", "công ty B"]
+      Kết quả:
+      {
+        "điều kiện thanh lý hợp đồng mua bán công ty A công ty B"
+      }
+      
+      Ví dụ 2:
+      Câu hỏi: "Có văn bản nào liên quan đến việc xử lý vi phạm hợp đồng bảo trì trong tháng 3 không?"
+      Key word là: ["văn bản", "xử lý vi phạm", "hợp đồng bảo trì", "tháng 3"]
+      Kết quả:
+      {
+        "văn bản xử lý vi phạm hợp đồng bảo trì tháng 3"
+      }
+      
+      Bây giờ hãy xử lý câu hỏi sau:
+      
+      Câu hỏi: "{{final_question}}"
+      Kết quả:
+  output:
+    main_key_words: "{{llm_output}}"
+  next: document_search
+
+
+- id: document_search
+  type: vector_search
+  name: "Tìm kiếm Qdrant local"
+  properties:
+    qdrant_url: "http://localhost:6333"
+    collection_name: "qdrant_collection"
+    search_value: "main_key_words"
+    metadata_filter: "metadata_identity_result"
+    chunk_require: 40
+    return_fields:
+      - "text"
+    result_name: document_vector_result
+    handle_error: notify_error
+  output:
+    document_result: "{{document_vector_result}}"
+  next: generate_natural_language
+
+
+
+
+############################################################################################################
+# Export excel ->
+############################################################################################################
+
+- id: generate_sql_excel
+  type: llm
+  name: "Xác định fields"
+  properties:
+
+    prompt: |
+     Bạn là trợ lý AI nội bộ, có nhiệm vụ sinh ra câu lệnh SQL (SQL Server) từ câu hỏi tự nhiên của người dùng.
+
+      ### Yêu cầu:
+      - Phân tích kỹ câu hỏi của người dùng.
+      - Dựa vào danh sách các cột (fields) được cung cấp bên dưới (dưới dạng JSON).
+      - Hiểu nghĩa cột qua `description`, nhưng viết SQL bằng `name`. Chỉ lọc/truy vấn trên cột của bảng alias `d` dựa vào danh sách cột được cấp (không bịa cột).
+      - Phải xét đến kiểu dữ liệu `type` của mỗi cột để đảm bảo câu SQL đúng về cú pháp và logic, tuân thủ `type` khi sinh điều kiện:
+           + datetime/date:
+            + Nếu lọc theo 1 NGÀY (không giờ): dùng khoảng sargable [d].[col] >= 'YYYY-MM-DDT00:00:00' AND [d].[col] < DATEADD(day,1,'YYYY-MM-DDT00:00:00')
+            + Nếu khoảng ngày: [d].[col] >= start AND [d].[col] < DATEADD(day,1,end)
+            + Nếu có giờ-phút-giây: so khớp chính xác theo mốc thời gian.
+            + number/int/decimal: so sánh không dùng nháy.
+            + string/nvarchar: dùng N'...'; dùng LIKE khi câu hỏi mơ hồ (chứa, bắt đầu bằng, kết thúc bằng).
+      - Bọc tên bảng/cột trong [ ]. Khi tham chiếu cột dữ liệu, luôn dùng tiền tố [d].[<name>].
+      - Hỗ trợ thời gian tương đối (“hôm nay”, “hôm qua”, “tuần này”, “tháng này”, “năm nay”, “7 ngày qua”…) suy ra từ {{today_date}} theo quy tắc ở (2).
+      - Nếu không tìm thấy cột nào phù hợp để truy vấn → trả về đúng chữ **No** (không thêm bất kỳ ký tự nào khác).
+      - Nếu có thể truy vấn → trả về **duy nhất câu lệnh SQL Server hoàn chỉnh**, KHÔNG giải thích, KHÔNG trả về markdown hoặc bất kỳ đoạn văn bản nào không thuộc câu lệnh SQL.
+      - Không bao giờ thêm dấu ``` hoặc ký tự không hợp lệ đối với SQL Server.
+      
+      ### Biến đầu vào:
+      - Câu hỏi người dùng: {{final_question}}
+      - Ngày hiện tại: {{today_date}} (định dạng yyyy-MM-dd)
+      - Tên bảng: {{current_table_name}}
+      - Danh sách cột: {{current_table_fields}} (định dạng JSON, mỗi cột có name và description)
+      
+      ### Mục tiêu:
+      → Sinh ra 1 câu lệnh SQL Server tương ứng chính xác với ý định của câu hỏi và phù hợp với schema bảng.
+  output:
+    selected_fields: "{{llm_output}}"
+  next: fetch_sql_excel
+
+
+- id: fetch_sql_excel
+  type: sql_result
+  name: get_sql_data
+  properties:
+    endpoint: "https://workflow.becawork.vn/api/apikey/AI/QuerySQL"
+    method: POST
+    headers:
+      Content-Type: application/json
+    payload:
+      username: "readonly_user"
+      password: "-ufR0NWc5B;c91CyKnD^"
+      sql: "{{selected_fields}}"
+  output:
+    sql_result: "{{api_response}}"
+  next: end
+
+###################
+# Handle smalltalk
+###################
+
+
+
+
+###################
+# End
+###################
+
+
+
+
+- id: notify_error
+  type: llm
+  name: "Báo không tìm thấy"
+  properties:
+
+    message: |
+      Lỗi: "{{error}}"
+      Bạn là một chuyên gia giải thích lỗi hệ thống.
+      Nhiệm vụ của bạn: Nhận vào error log (stacktrace, message lỗi, log hệ thống, …) 
+      và dịch nó sang ngôn ngữ tự nhiên dễ hiểu cho người dùng.
+      
+      ### Yêu cầu:
+      - Giải thích lỗi ngắn gọn, dễ hiểu (1–3 câu).
+      - Nếu có thể, nêu rõ nguyên nhân gốc (ví dụ: thiếu collection, sai tên biến, thiếu cột trong SQL).
+      - Đưa ra gợi ý cách xử lý cụ thể để khắc phục.
+      - Không cần lặp lại toàn bộ log dài dòng.
+      - Đối với lỗi không có collection bạn chỉ cần trả về "Không có dữ liệu của loại phiếu (collections) mà bạn cần trong database. Vui lòng thử lại"
+  output:
+    final_question: "{{llm_output}}"
+  next: end
+
+
+- id: define_user_request
+  type: llm
+  name: "Trả lời luồng other"
+  properties:
+    message: |
+      Câu hỏi: "{{final_question}}"
+      Bạn là một AI VNTT có nhiệm vụ giao tiếp với người dùng
+      Hãy dựa vào câu hỏi của người dùng và trả lời câu hỏi của họ, hoặc đáp lại câu nói của họ
+      
+      ### Yêu cầu:
+      - Giải thích lỗi ngắn gọn, dễ hiểu
+      - Thân thiện, đầy đủ ý nghĩa.
+  output:
+    final_question: "{{llm_output}}"
+  next: end
+
+
+- id: end
+  type: end
+  name: "Kết thúc"
