@@ -1,62 +1,70 @@
 from __future__ import annotations
 
-import ast
 import json
+import logging
 import os
-import re
 from datetime import date
-from typing import Any, Dict
-fromt dotenv import load_dotenv
+from typing import Any, Mapping
+
+from dotenv import load_dotenv
 from jinja2 import Template
 from openai import OpenAI
 from openai.types.chat import ChatCompletionUserMessageParam
 
-load_dotenv()   
+from nodes.utils import clean_fenced_content, parse_json_maybe
 
 
-
-def _clean_json_string(content: str) -> str:
-    pattern = r"```(?:json)?\s*(.*?)```"
-    match = re.search(pattern, content, re.DOTALL)
-    return match.group(1).strip() if match else content.strip()
+load_dotenv()
+logger = logging.getLogger(__name__)
 
 
-def _safe_parse_json_maybe(raw: Any):
-    if not raw:
-        return None
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str):
-        s = raw.strip()
+class OpenAIChatClient:
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        self._client = OpenAI(
+            api_key=api_key or os.getenv("OPENAI_API_KEY"),
+            base_url=base_url or os.getenv("OPENAI_BASE_URL"),
+        )
+
+    def complete(self, prompt: str, model: str) -> Any:
+        messages: list[ChatCompletionUserMessageParam] = [
+            {"role": "user", "content": prompt}
+        ]
+        response = self._client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.0,
+            stream=False,
+        )
+        content = response.choices[0].message.content or ""
+        cleaned = clean_fenced_content(content)
         try:
-            return json.loads(s)
+            return json.loads(cleaned)
         except json.JSONDecodeError:
-            try:
-                return ast.literal_eval(s)
-            except Exception:
-                return None
-    return None
+            return cleaned
+
 
 def _render_prompt(template_str: str, context) -> str:
-    ctx = context.to_dict().copy()
-
+    ctx = context.to_dict()
     conversation_history = ctx.get("conversation_history", [])
     if isinstance(conversation_history, list):
-        ctx["conversation_history"] = json.dumps(conversation_history, ensure_ascii=False)
+        ctx["conversation_history"] = json.dumps(
+            conversation_history,
+            ensure_ascii=False,
+        )
 
     if not template_str:
         return ""
 
-    template = Template(template_str)
-    today = date.today()
-    parsed = _safe_parse_json_maybe(ctx.get("behavior_json"))
-    if isinstance(parsed, dict):
-        query_value = parsed.get("final_question")
-    else :
-        query_value = parsed
-    return template.render(
+    parsed_behavior = parse_json_maybe(ctx.get("behavior_json"))
+    final_question = (
+        parsed_behavior.get("final_question")
+        if isinstance(parsed_behavior, Mapping)
+        else parsed_behavior
+    )
+
+    return Template(template_str).render(
         context=ctx,
-        final_question = query_value,
+        final_question=final_question,
         user_question=ctx.get("user_question", ""),
         current_table=ctx.get("current_table", ""),
         selected_fields=ctx.get("selected_fields", ""),
@@ -65,81 +73,53 @@ def _render_prompt(template_str: str, context) -> str:
         current_table_fields=ctx.get("fields", []),
         sql_result=ctx.get("sql_result", ""),
         document_vector_result=ctx.get("document_vector_result", []),
-        today_date=today.isoformat(),
+        today_date=date.today().isoformat(),
         tables_to_choose=ctx.get("table_vector_result", []),
-        excel_file_list = ctx.get("excel_file_list", []),
+        excel_file_list=ctx.get("excel_file_list", []),
         error=ctx.get("error", ""),
-        history_chat = ctx.get("history_chat", ""),
+        history_chat=ctx.get("history_chat", ""),
     )
 
-def _call_openai_api(prompt: str, model: str):
-   
 
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"),
-                    base_url=os.getenv("OPENAI_BASE_URL"))
-
-
-
-    messages: list[ChatCompletionUserMessageParam] = [
-        {"role": "user", "content": prompt}
-    ]
-
-    print("Model dang su dung de tao answer", model)
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.0,
-        stream=False,
+def _append_assistant_message(context, llm_output: Any) -> None:
+    history = context.get("conversation_history", [])
+    if not isinstance(history, list):
+        history = []
+    assistant_reply = (
+        json.dumps(llm_output, ensure_ascii=False)
+        if isinstance(llm_output, dict)
+        else str(llm_output)
     )
-
-    content = response.choices[0].message.content
-
-    print(content)
-
-    clean_content = _clean_json_string(content)
-    try:
-        return json.loads(clean_content)
-    except json.JSONDecodeError:
-        return clean_content
+    history.append({"role": "assistant", "content": assistant_reply})
+    context.set("conversation_history", history)
 
 
 def run(step, context):
     props = step.get("properties", {})
-
     prompt_template = props.get("prompt", "")
-    
-    model = "gpt-4o"
+    model = props.get("model", "gpt-4o")
 
-    rendered = _render_prompt(prompt_template, context)
-    print(f"\n[LLM Node: {step['id']}] Prompt:\n{rendered}\n")
+    rendered_prompt = _render_prompt(prompt_template, context)
+    logger.debug("LLM node %s prompt: %s", step.get("id"), rendered_prompt)
 
-    api_key = context.get("openai_api_key") or os.getenv("OPENAI_API_KEY")
-    llm_output = _call_openai_api(rendered, model=model)
-    print(f"Output từ LM:\n{llm_output}\n")
+    client = OpenAIChatClient(api_key=context.get("openai_api_key"))
+    llm_output = client.complete(rendered_prompt, model=model)
+    logger.debug("LLM node %s output: %s", step.get("id"), llm_output)
 
     if llm_output == "No" and props.get("handle_error"):
         return {}, props["handle_error"]
 
-    output_template = step.get("output", {})
-    output_dict: Dict[str, Any] = {}
+    _append_assistant_message(context, llm_output)
 
-    history = context.get("conversation_history", [])
-    if not isinstance(history, list):
-        history = []
-    assistant_reply = json.dumps(llm_output, ensure_ascii=False) if isinstance(llm_output, dict) else str(llm_output)
-    history.append({"role": "assistant", "content": assistant_reply})
-    context.set("conversation_history", history)
-
-    for var_name, template in output_template.items():
-        jinja_template = Template(template)
-        output_dict[var_name] = jinja_template.render(
+    output_dict: dict[str, Any] = {}
+    for var_name, template in step.get("output", {}).items():
+        output_dict[var_name] = Template(template).render(
             **(llm_output if isinstance(llm_output, dict) else {}),
             llm_output=llm_output,
-            context=context.to_dict()
+            context=context.to_dict(),
         )
+
     if props.get("data"):
         context.set(props["data"], output_dict)
 
-    next_step = step.get("next")
-    return output_dict, next_step
+    return output_dict, step.get("next")

@@ -1,101 +1,83 @@
-import json
-import re
+from __future__ import annotations
+
+import logging
 import os
+import re
 import uuid
+from collections.abc import Callable
+from typing import Any
+
 from jinja2 import Template
-import ast
 
-def render_template(value, context_dict):
-    if isinstance(value, str):
-        return Template(value).render(**context_dict)
-    elif isinstance(value, list):
-        return [render_template(v, context_dict) for v in value]
-    elif isinstance(value, dict):
-        return {k: render_template(v, context_dict) for k, v in value.items()}
-    return value
+from nodes.utils import parse_json_maybe, render_template
 
 
-
-def parse_json_fields(data_dict, fields):
-    print(f"📥 Input JSON dict: {data_dict}")
-    if not isinstance(data_dict, dict):
-        raise ValueError("Input must be a JSON dict.")
-    result = {field: data_dict.get(field, "") for field in fields}
-    print(f"✅ Parsed fields: {result}")
-    return result
+logger = logging.getLogger(__name__)
 
 
-def validate_select_query(query):
-    pattern = r"^\s*SELECT\s+.+\s+FROM\s+.+" 
-    if re.match(pattern, query, re.IGNORECASE):
-        return query.strip()
-    else:
-        raise ValueError("Invalid SQL: Only SELECT queries are allowed.")
+def parse_json_fields(data: Any, fields: list[str]) -> dict[str, Any]:
+    parsed = parse_json_maybe(data) if isinstance(data, str) else data
+    if not isinstance(parsed, dict):
+        raise ValueError("Input must be a JSON object.")
+    return {field: parsed.get(field, "") for field in fields}
 
-def create_file_and_get_link(data):
+
+def validate_select_query(query: str) -> str:
+    pattern = r"^\s*SELECT\s+.+\s+FROM\s+.+"
+    if not query or not re.match(pattern, query, re.IGNORECASE):
+        raise ValueError("Invalid SQL: only SELECT queries are allowed.")
+    return query.strip()
+
+
+def create_file_and_get_link(data: str | None) -> str:
+    if data is None:
+        raise ValueError("Missing 'data' for file creation.")
+
+    filename = f"data_{uuid.uuid4().hex}.txt"
+    filepath = os.path.join("downloads", filename)
+    os.makedirs("downloads", exist_ok=True)
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(data)
+
+    return f"/downloads/{filename}"
+
+
+def _run_function(function_name: str, rendered_input: dict[str, Any]) -> Any:
+    functions: dict[str, Callable[[dict[str, Any]], Any]] = {
+        "parse_json_fields": lambda data: parse_json_fields(
+            data.get("json_string"),
+            data.get("fields", []),
+        ),
+        "validate_select_query": lambda data: validate_select_query(data.get("query", "")),
+        "create_file_and_get_link": lambda data: create_file_and_get_link(data.get("data")),
+    }
+
     try:
-        filename = f"data_{uuid.uuid4().hex}.txt"
-        filepath = os.path.join("downloads", filename)
-        os.makedirs("downloads", exist_ok=True)
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(data)
-
-        return f"/downloads/{filename}"  
-    except Exception as e:
-        print(f"Error creating file: {e}")
-        return None
+        return functions[function_name](rendered_input)
+    except KeyError as exc:
+        raise ValueError(f"Function '{function_name}' is not supported.") from exc
 
 
 def run(step, context):
     context_dict = context.to_dict()
-    input_template = step.get("input", {})
-    rendered_input = render_template(input_template, context_dict)
+    rendered_input = render_template(step.get("input", {}), context_dict)
+    if not isinstance(rendered_input, dict):
+        raise ValueError("Function node input must render to an object.")
 
     function_name = step.get("function")
-    output_mapping = step.get("output", {})
-    next_step = step.get("next")
+    if not function_name:
+        raise ValueError("Function node is missing a function name.")
 
-    print(f"Running function node: {function_name}")
-    print(f"Input after rendering: {rendered_input}")
+    logger.debug("Running function node %s with input %s", function_name, rendered_input)
+    result = _run_function(function_name, rendered_input)
 
-    if function_name == "parse_json_fields":
-        json_data = rendered_input["json_string"]
-
-        print(json_data)
-        if isinstance(json_data, str):
-            try:
-                json_data = ast.literal_eval(json_data)
-            except Exception as e:
-                raise ValueError(f"Không thể chuyển chuỗi thành dict: {e}")
-
-        fields = rendered_input.get("fields", [])
-        result = parse_json_fields(json_data, fields)
-
-    elif function_name == "validate_select_query":
-        query = rendered_input.get("query")
-        if not query:
-            raise ValueError("Missing SQL query for validation.")
-        result = validate_select_query(query)
-
-    elif function_name == "create_file_and_get_link":
-        data = rendered_input.get("data")
-        if data is None:
-            raise ValueError("Missing 'data' for file creation.")
-        result = create_file_and_get_link(data)
-
-    else:
-        raise ValueError(f"Function '{function_name}' is not supported.")
-
-    output_dict = {}
-    for key, template in output_mapping.items():
+    output_dict: dict[str, Any] = {}
+    for key, template in step.get("output", {}).items():
         try:
-            jinja_template = Template(template)
-            output_value = jinja_template.render(result=result, context=context_dict)
-            output_dict[key] = output_value
-        except Exception as e:
-            print(f"⚠️ Error rendering output '{key}': {e}")
+            output_dict[key] = Template(template).render(result=result, context=context_dict)
+        except Exception:
+            logger.exception("Error rendering function output '%s'", key)
             output_dict[key] = ""
 
-    print(f"Output to context: {output_dict}")
-    return output_dict, next_step
+    return output_dict, step.get("next")

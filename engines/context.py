@@ -1,21 +1,33 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+
 class Context:
-    def __init__(self):
-        self.data = {}
+    """Small state container shared by workflow nodes."""
 
-    def get(self, key, default=None):
-        return self.data.get(key, default)
+    def __init__(self, initial_data: Mapping[str, Any] | None = None):
+        self._data: dict[str, Any] = dict(initial_data or {})
 
-    def set(self, key, value):
-        self.data[key] = value
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
 
-    def update(self, other_dict):
-        self.data.update(other_dict)
+    def set(self, key: str, value: Any) -> None:
+        self._data[key] = value
 
-    def to_dict(self):
-        return self.data
+    def update(self, values: Mapping[str, Any] | None) -> None:
+        if values:
+            self._data.update(values)
 
-    def __getitem__(self, key):
-        return self.data[key]
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self._data)
 
-    def __setitem__(self, key, value):
-        self.data[key] = value
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._data[key] = value
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._data
